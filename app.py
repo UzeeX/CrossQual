@@ -1,13 +1,32 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 st.set_page_config(
-    page_title="Portfolio Strategy Analyzer",
+    page_title="Portfolio Strategy Intelligence",
     layout="wide"
 )
 
-st.title("📊 Portfolio Strategy Analyzer")
-st.caption("Match portfolio holdings against cross-qualifying strategy lists")
+# -----------------------------
+# STYLING (Institutional Look)
+# -----------------------------
+st.markdown("""
+<style>
+.block-container {
+    padding-top: 2rem;
+}
+h1 {
+    font-weight: 600;
+}
+.metric-container {
+    border-radius: 12px;
+    padding: 1rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Portfolio Strategy Intelligence")
+st.caption("Institutional Strategy Classification & Overlap Analysis")
 
 portfolio_file = st.file_uploader("Upload Portfolio CSV", type=["csv"])
 qualifying_file = st.file_uploader("Upload Cross Qualifying Matrix CSV", type=["csv"])
@@ -15,7 +34,7 @@ qualifying_file = st.file_uploader("Upload Cross Qualifying Matrix CSV", type=["
 if portfolio_file and qualifying_file:
 
     # ----------------------------
-    # LOAD + CLEAN
+    # LOAD DATA
     # ----------------------------
     portfolio = pd.read_csv(portfolio_file)
     qualifying = pd.read_csv(qualifying_file)
@@ -34,16 +53,13 @@ if portfolio_file and qualifying_file:
     # Clean symbols
     def clean_symbol(x):
         x = str(x).upper().strip()
-        if ":" in x:  # remove XTSE:
+        if ":" in x:
             x = x.split(":")[1]
         return x
 
     portfolio["TICKER"] = portfolio["TICKER"].astype(str).str.upper().str.strip()
     qualifying["SYMBOL"] = qualifying["SYMBOL"].apply(clean_symbol)
 
-    # ----------------------------
-    # MERGE
-    # ----------------------------
     merged = portfolio.merge(
         qualifying,
         left_on="TICKER",
@@ -55,12 +71,12 @@ if portfolio_file and qualifying_file:
     matched = merged["SYMBOL"].notna().sum()
 
     st.divider()
-    col_a, col_b = st.columns(2)
-    col_a.metric("Total Holdings", total_holdings)
-    col_b.metric("Matched to Strategy Universe", matched)
+    c1, c2 = st.columns(2)
+    c1.metric("Total Holdings", total_holdings)
+    c2.metric("Matched to Strategy Universe", matched)
 
     if matched == 0:
-        st.warning("No symbol matches found. Check formatting.")
+        st.warning("No matches found.")
         st.stop()
 
     # ----------------------------
@@ -77,9 +93,12 @@ if portfolio_file and qualifying_file:
     ]
 
     # ----------------------------
-    # COUNT QUALIFICATIONS
+    # COUNT STRATEGY MEMBERSHIP
     # ----------------------------
     results = {}
+
+    strategy_matrix = pd.DataFrame()
+    strategy_matrix["TICKER"] = merged["TICKER"]
 
     for strat in strategy_cols:
 
@@ -94,83 +113,98 @@ if portfolio_file and qualifying_file:
 
             col_data = pd.to_numeric(col_data, errors="coerce").fillna(0)
 
-            count = (col_data > 0).sum()
+            qualifies = col_data > 0
 
-            results[strat] = count
+            strategy_matrix[strat] = qualifies.astype(int)
+
+            results[strat] = qualifies.sum()
 
     results_series = pd.Series(results).sort_values(ascending=False)
-
     percent_series = (results_series / total_holdings * 100).round(1)
+
+    # ----------------------------
+    # RANKING BADGES
+    # ----------------------------
+    ranking = results_series.reset_index()
+    ranking.columns = ["Strategy", "Count"]
+
+    ranking["Rank"] = ranking["Count"].rank(method="min", ascending=False).astype(int)
+
+    def badge(rank):
+        if rank == 1:
+            return "🥇"
+        elif rank == 2:
+            return "🥈"
+        elif rank == 3:
+            return "🥉"
+        else:
+            return ""
+
+    ranking["Badge"] = ranking["Rank"].apply(badge)
+    ranking["% of Portfolio"] = percent_series.values
 
     # ----------------------------
     # DOMINANT STRATEGY
     # ----------------------------
-    dominant_strategy = results_series.idxmax()
-    dominant_count = results_series.max()
-    dominant_percent = percent_series.loc[dominant_strategy]
+    dominant = ranking.iloc[0]
 
     st.divider()
-    st.subheader("🏆 Dominant Strategy")
+    st.subheader("Dominant Strategy")
 
     st.metric(
-        label=dominant_strategy,
-        value=f"{dominant_count} Holdings",
-        delta=f"{dominant_percent}% of Portfolio"
+        f"{dominant['Badge']} {dominant['Strategy']}",
+        f"{dominant['Count']} Holdings",
+        delta=f"{dominant['% of Portfolio']}% of Portfolio"
     )
 
     # ----------------------------
-    # STRATEGY BREAKDOWN
+    # STRATEGY RANKING TABLE
     # ----------------------------
     st.divider()
-    st.subheader("📊 Strategy Breakdown")
+    st.subheader("Strategy Ranking")
 
-    breakdown_df = pd.DataFrame({
-        "Qualified Holdings": results_series,
-        "% of Portfolio": percent_series
-    })
+    styled_table = ranking.set_index("Strategy")[[
+        "Badge", "Count", "% of Portfolio"
+    ]]
 
     st.dataframe(
-        breakdown_df,
+        styled_table,
         use_container_width=True
     )
 
     st.bar_chart(percent_series)
 
     # ----------------------------
-    # VIEW STOCKS PER STRATEGY
+    # MULTI-STRATEGY OVERLAP MATRIX
     # ----------------------------
     st.divider()
-    st.subheader("🔎 View Stocks by Strategy")
+    st.subheader("Multi-Strategy Overlap Matrix")
 
-    selected_strategy = st.selectbox("Select Strategy", strategy_cols)
+    overlap_matrix = strategy_matrix[strategy_cols]
 
-    if selected_strategy:
+    # Count how many strategies each stock belongs to
+    strategy_matrix["Total_Strategies"] = overlap_matrix.sum(axis=1)
 
-        col_data = pd.to_numeric(
-            merged[selected_strategy],
-            errors="coerce"
-        ).fillna(0)
+    overlap_summary = strategy_matrix.groupby("Total_Strategies").size()
 
-        qualifying_stocks = merged.loc[col_data > 0, "TICKER"]
+    st.write("Distribution of strategy overlap per stock:")
+    st.bar_chart(overlap_summary)
 
-        st.write(
-            f"{len(qualifying_stocks)} holdings qualify under **{selected_strategy}**"
-        )
-
-        st.dataframe(
-            qualifying_stocks.reset_index(drop=True),
-            use_container_width=True
-        )
+    st.write("Detailed Overlap Matrix:")
+    st.dataframe(
+        strategy_matrix.set_index("TICKER"),
+        use_container_width=True
+    )
 
     # ----------------------------
-    # DOWNLOAD REPORT
+    # DOWNLOAD
     # ----------------------------
     st.divider()
 
     st.download_button(
-        "📥 Download Strategy Report",
-        breakdown_df.to_csv(),
-        "strategy_analysis_report.csv",
+        "Download Full Strategy Intelligence Report",
+        ranking.to_csv(index=False),
+        "strategy_intelligence_report.csv",
         "text/csv"
     )
 
