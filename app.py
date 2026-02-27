@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 
 st.set_page_config(
     page_title="Portfolio Strategy Intelligence",
@@ -8,19 +7,15 @@ st.set_page_config(
 )
 
 # -----------------------------
-# STYLING (Institutional Look)
+# Institutional Styling
 # -----------------------------
 st.markdown("""
 <style>
 .block-container {
     padding-top: 2rem;
 }
-h1 {
+h1, h2, h3 {
     font-weight: 600;
-}
-.metric-container {
-    border-radius: 12px;
-    padding: 1rem;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -50,16 +45,21 @@ if portfolio_file and qualifying_file:
         st.error("Qualifying file must contain a SYMBOL column.")
         st.stop()
 
-    # Clean symbols
+    # ----------------------------
+    # CLEAN SYMBOLS
+    # ----------------------------
     def clean_symbol(x):
         x = str(x).upper().strip()
-        if ":" in x:
+        if ":" in x:  # remove XTSE: prefix
             x = x.split(":")[1]
         return x
 
     portfolio["TICKER"] = portfolio["TICKER"].astype(str).str.upper().str.strip()
     qualifying["SYMBOL"] = qualifying["SYMBOL"].apply(clean_symbol)
 
+    # ----------------------------
+    # MERGE
+    # ----------------------------
     merged = portfolio.merge(
         qualifying,
         left_on="TICKER",
@@ -71,12 +71,12 @@ if portfolio_file and qualifying_file:
     matched = merged["SYMBOL"].notna().sum()
 
     st.divider()
-    c1, c2 = st.columns(2)
-    c1.metric("Total Holdings", total_holdings)
-    c2.metric("Matched to Strategy Universe", matched)
+    col1, col2 = st.columns(2)
+    col1.metric("Total Holdings", total_holdings)
+    col2.metric("Matched to Strategy Universe", matched)
 
     if matched == 0:
-        st.warning("No matches found.")
+        st.warning("No symbol matches found.")
         st.stop()
 
     # ----------------------------
@@ -93,41 +93,37 @@ if portfolio_file and qualifying_file:
     ]
 
     # ----------------------------
-    # COUNT STRATEGY MEMBERSHIP
+    # BUILD STRATEGY MATRIX
     # ----------------------------
-    results = {}
-
     strategy_matrix = pd.DataFrame()
     strategy_matrix["TICKER"] = merged["TICKER"]
 
+    results = {}
+
     for strat in strategy_cols:
 
-        if strat in merged.columns:
+        col_data = merged[strat].fillna(0)
 
-            col_data = merged[strat].fillna(0)
+        col_data = col_data.replace({
+            "YES": 1, "Yes": 1, "Y": 1,
+            "TRUE": 1, True: 1
+        })
 
-            col_data = col_data.replace({
-                "YES": 1, "Yes": 1, "Y": 1,
-                "TRUE": 1, True: 1
-            })
+        col_data = pd.to_numeric(col_data, errors="coerce").fillna(0)
 
-            col_data = pd.to_numeric(col_data, errors="coerce").fillna(0)
+        qualifies = (col_data > 0).astype(int)
 
-            qualifies = col_data > 0
-
-            strategy_matrix[strat] = qualifies.astype(int)
-
-            results[strat] = qualifies.sum()
+        strategy_matrix[strat] = qualifies
+        results[strat] = qualifies.sum()
 
     results_series = pd.Series(results).sort_values(ascending=False)
     percent_series = (results_series / total_holdings * 100).round(1)
 
     # ----------------------------
-    # RANKING BADGES
+    # RANKING + BADGES
     # ----------------------------
     ranking = results_series.reset_index()
     ranking.columns = ["Strategy", "Count"]
-
     ranking["Rank"] = ranking["Count"].rank(method="min", ascending=False).astype(int)
 
     def badge(rank):
@@ -137,8 +133,7 @@ if portfolio_file and qualifying_file:
             return "🥈"
         elif rank == 3:
             return "🥉"
-        else:
-            return ""
+        return ""
 
     ranking["Badge"] = ranking["Rank"].apply(badge)
     ranking["% of Portfolio"] = percent_series.values
@@ -163,46 +158,52 @@ if portfolio_file and qualifying_file:
     st.divider()
     st.subheader("Strategy Ranking")
 
-    styled_table = ranking.set_index("Strategy")[[
+    display_table = ranking.set_index("Strategy")[[
         "Badge", "Count", "% of Portfolio"
     ]]
 
-    st.dataframe(
-        styled_table,
-        use_container_width=True
-    )
-
+    st.dataframe(display_table, use_container_width=True)
     st.bar_chart(percent_series)
 
     # ----------------------------
-    # MULTI-STRATEGY OVERLAP MATRIX
+    # OVERLAP DISTRIBUTION
     # ----------------------------
     st.divider()
-    st.subheader("Multi-Strategy Overlap Matrix")
+    st.subheader("Strategy Overlap Distribution")
 
-    overlap_matrix = strategy_matrix[strategy_cols]
+    strategy_matrix["Total_Strategies"] = strategy_matrix[strategy_cols].sum(axis=1)
+    overlap_distribution = strategy_matrix.groupby("Total_Strategies").size()
 
-    # Count how many strategies each stock belongs to
-    strategy_matrix["Total_Strategies"] = overlap_matrix.sum(axis=1)
-
-    overlap_summary = strategy_matrix.groupby("Total_Strategies").size()
-
-    st.write("Distribution of strategy overlap per stock:")
-    st.bar_chart(overlap_summary)
-
-    st.write("Detailed Overlap Matrix:")
-    st.dataframe(
-        strategy_matrix.set_index("TICKER"),
-        use_container_width=True
-    )
+    st.bar_chart(overlap_distribution)
 
     # ----------------------------
-    # DOWNLOAD
+    # STYLED OVERLAP MATRIX
+    # ----------------------------
+    st.divider()
+    st.subheader("Detailed Overlap Matrix")
+
+    display_matrix = strategy_matrix.set_index("TICKER")
+
+    # Replace 1 with check mark and 0 with blank
+    display_matrix = display_matrix.replace({1: "✓", 0: ""})
+
+    def style_cells(val):
+        if val == "✓":
+            return "background-color: #1f7a1f; color: white; text-align: center;"
+        else:
+            return "background-color: #0e1117; color: #0e1117; text-align: center;"
+
+    styled_matrix = display_matrix.style.applymap(style_cells)
+
+    st.dataframe(styled_matrix, use_container_width=True)
+
+    # ----------------------------
+    # DOWNLOAD REPORT
     # ----------------------------
     st.divider()
 
     st.download_button(
-        "Download Full Strategy Intelligence Report",
+        "Download Strategy Intelligence Report",
         ranking.to_csv(index=False),
         "strategy_intelligence_report.csv",
         "text/csv"
