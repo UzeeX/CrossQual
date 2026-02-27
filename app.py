@@ -23,28 +23,32 @@ if portfolio_file and qualifying_file:
     # ----------------------------
     if "TICKER" not in portfolio.columns:
         st.error("Portfolio must contain a TICKER column.")
-        st.write("Detected columns:", portfolio.columns.tolist())
         st.stop()
 
     if "SYMBOL" not in qualifying.columns:
         st.error("Qualifying file must contain a SYMBOL column.")
-        st.write("Detected columns:", qualifying.columns.tolist())
         st.stop()
 
     # ----------------------------
-    # CLEAN TICKERS
+    # NORMALIZE SYMBOLS
     # ----------------------------
-    def normalize_symbol(x):
+    def clean_portfolio_symbol(x):
+        return str(x).upper().strip()
+
+    def clean_qualifying_symbol(x):
         x = str(x).upper().strip()
-        # Remove common exchange suffixes
-        x = x.replace(".TO", "").replace(".US", "").replace(".O", "")
+
+        # Remove exchange prefix like XTSE:
+        if ":" in x:
+            x = x.split(":")[1]
+
         return x
 
-    portfolio["TICKER"] = portfolio["TICKER"].apply(normalize_symbol)
-    qualifying["SYMBOL"] = qualifying["SYMBOL"].apply(normalize_symbol)
+    portfolio["TICKER"] = portfolio["TICKER"].apply(clean_portfolio_symbol)
+    qualifying["SYMBOL"] = qualifying["SYMBOL"].apply(clean_qualifying_symbol)
 
     # ----------------------------
-    # DETERMINE WEIGHT SOURCE
+    # DETERMINE WEIGHT
     # ----------------------------
     if "WEIGHT" in portfolio.columns:
         portfolio["WEIGHT"] = pd.to_numeric(portfolio["WEIGHT"], errors="coerce").fillna(0)
@@ -68,68 +72,51 @@ if portfolio_file and qualifying_file:
         how="left"
     )
 
+    matches = merged["SYMBOL"].notna().sum()
+    st.write(f"Matched {matches} out of {len(portfolio)} holdings")
+
     # ----------------------------
-    # STRATEGY COLUMN DETECTION
+    # STRATEGY COLUMNS
     # ----------------------------
     metadata_cols = {
-        "SYMBOL", "EXCHANGE", "COMPANY", "COMPAGNY",
+        "SYMBOL", "EXCHANGE", "COMPAGNY", "COMPANY",
         "SECTOR", "RANK"
     }
 
-    strategy_cols = []
-
-    for col in qualifying.columns:
-        if col not in metadata_cols:
-
-            col_series = qualifying[col]
-
-            # If numeric column
-            if pd.api.types.is_numeric_dtype(col_series):
-                strategy_cols.append(col)
-
-            # If object column but contains YES/NO type values
-            elif col_series.dropna().astype(str).str.upper().isin(
-                ["YES", "NO", "Y", "N", "TRUE", "FALSE", "1", "0"]
-            ).any():
-                strategy_cols.append(col)
-
-    if not strategy_cols:
-        st.error("No strategy columns detected.")
-        st.stop()
+    strategy_cols = [
+        col for col in qualifying.columns
+        if col not in metadata_cols
+    ]
 
     # ----------------------------
-    # ALIGNMENT CALCULATION
+    # ALIGNMENT CALCULATION (RANK-BASED)
     # ----------------------------
     alignment_results = {}
     total_weight = portfolio["WEIGHT"].sum()
 
     for strat in strategy_cols:
 
-        col_data = merged[strat].fillna(0)
+        if strat in merged.columns:
 
-        # Convert YES/NO formats
-        col_data = col_data.replace({
-            "YES": 1, "Yes": 1, "Y": 1,
-            "TRUE": 1, True: 1,
-            "NO": 0, "No": 0, "N": 0,
-            "FALSE": 0, False: 0
-        })
+            col_data = pd.to_numeric(
+                merged[strat],
+                errors="coerce"
+            ).fillna(0)
 
-        col_data = pd.to_numeric(col_data, errors="coerce").fillna(0)
+            # Weighted average score
+            strat_score = (col_data * merged["WEIGHT"]).sum()
 
-        strat_weight = (col_data * merged["WEIGHT"]).sum()
+            if total_weight > 0:
+                score_percent = strat_score / total_weight
+            else:
+                score_percent = 0
 
-        if total_weight > 0:
-            weight_percent = (strat_weight / total_weight) * 100
-        else:
-            weight_percent = 0
-
-        alignment_results[strat] = round(weight_percent, 2)
+            alignment_results[strat] = round(score_percent, 2)
 
     alignment_series = pd.Series(alignment_results).sort_values(ascending=False)
 
     # ----------------------------
-    # DISPLAY RESULTS
+    # DISPLAY
     # ----------------------------
     st.divider()
 
@@ -140,17 +127,17 @@ if portfolio_file and qualifying_file:
         st.metric(
             "🏆 Top Matching Strategy",
             top_strategy,
-            f"{top_score:.2f}% Weight Match"
+            f"Avg Score: {top_score}"
         )
 
-    st.subheader("📈 Strategy Alignment by Weight (%)")
+    st.subheader("📈 Strategy Alignment (Weighted Average Score)")
     st.dataframe(alignment_series)
     st.bar_chart(alignment_series)
 
     # ----------------------------
-    # MERGE DIAGNOSTICS
+    # UNMATCHED STOCKS
     # ----------------------------
-    unmatched = merged[merged[strategy_cols].isna().all(axis=1)]
+    unmatched = merged[merged["SYMBOL"].isna()]
 
     if not unmatched.empty:
         st.divider()
@@ -158,7 +145,7 @@ if portfolio_file and qualifying_file:
         st.dataframe(unmatched[["TICKER", "WEIGHT"]])
 
     # ----------------------------
-    # DOWNLOAD REPORT
+    # DOWNLOAD
     # ----------------------------
     st.download_button(
         "📥 Download Alignment Report",
